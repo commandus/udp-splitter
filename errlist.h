@@ -18,4 +18,4 @@
 #define MSG_DAEMON_STARTED_1    		". Check syslog."
 #define MSG_WS_TIMEOUT					"Web service time out"
 
-const char *strerror_humandetector(int errcode);
+const char *strerror_udpsplitter(int errcode);

@@ -7,7 +7,6 @@
 #include <streambuf>
 #include <iomanip>
 
-
 // http://stackoverflow.com/questions/673240/how-do-i-print-an-unsigned-char-as-hex-in-c-using-ostream
 struct HexCharStruct
 {

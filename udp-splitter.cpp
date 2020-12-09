@@ -12,6 +12,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <limits.h>
 
 #include "argtable3/argtable3.h"
@@ -29,6 +31,27 @@ class UDPSocket {
   public:
     int socket;
     struct addrinfo addr;
+    struct sockaddr addrStorage;
+    UDPSocket() 
+      : socket(0)
+    {
+      memset(&addr, 0, sizeof(struct addrinfo));
+      memset(&addrStorage, 0, sizeof(struct sockaddr));
+    }
+
+    UDPSocket(const UDPSocket &value) 
+      : socket(value.socket)
+    {
+      memmove(&addrStorage, value.addr.ai_addr, sizeof(struct sockaddr));
+      memmove(&addr, &value.addr, sizeof(struct addrinfo));
+      addr.ai_addr = &addrStorage;
+    }
+    std::string toString() {
+      std::stringstream ss;
+      ss << socket << " " << inet_ntoa(((struct sockaddr_in *) addr.ai_addr)->sin_addr) 
+        << ":" << ntohs(((struct sockaddr_in *) addr.ai_addr)->sin_port);
+      return ss.str();
+    }
 };
   
 class UDPSplitter {
@@ -42,15 +65,24 @@ class UDPSplitter {
 
     UDPSplitter() :
       stopped(false), daemonize(false), verbosity(0),
-      logfilename(""), logstream(NULL)
+      logfilename(""), logstream(&std::cerr)
     {
     }
 
     ~UDPSplitter() {
       if (logstream) {
-        delete logstream;
+        if (!logfilename.empty())
+          delete logstream;
         logstream = NULL;
       }
+    }
+
+    std::string toString() {
+      std::stringstream ss;
+      for (std::vector<UDPSocket>::iterator it(sockets.begin()); it != sockets.end(); it++) {
+        ss << it->toString() << std::endl;
+      }
+      return ss.str();
     }
 
     void closeDevices() {
@@ -73,13 +105,20 @@ class UDPSplitter {
       
       int r = getaddrinfo(address, port, &hints, &addr);
       if (r != 0 || addr == NULL) {
+          std::cerr << "get address info error " << errno << ": " << strerror(errno) << std::endl;
           return -1;
       }
       retval.socket = socket(addr->ai_family, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
       memmove(&retval.addr, addr, sizeof(struct addrinfo));
+      if (logstream && verbosity > 2) {
+        struct sockaddr_in *s = (struct sockaddr_in *) retval.addr.ai_addr;
+        *logstream << inet_ntoa(s->sin_addr) << ":" << ntohs(s->sin_port) << std::endl;
+      }
+
       freeaddrinfo(addr);
       
       if (retval.socket == -1) {
+          std::cerr << "open socket error " << errno << ": " << strerror(errno) << std::endl;
           return -1;
       }
       return retval.socket;
@@ -94,6 +133,7 @@ class UDPSplitter {
       if (sock >= 0) {
         int r = bind(sock, retval.addr.ai_addr, retval.addr.ai_addrlen);
         if (r < 0) {
+          std::cerr << "bind error " << errno << ": "<< strerror(errno) << std::endl;
           close(sock);
           return r;
         }
@@ -107,10 +147,14 @@ class UDPSplitter {
         return false;
       int sock;
       UDPSocket s;
+
+      std::string h(address.substr(0, pos));
+      std::string p(address.substr(pos + 1));
+
       if (!sockets.size())
-        sock = listenSocket(s, address.substr(0, pos).c_str(), address.substr(pos + 1).c_str());
+        sock = listenSocket(s, h.c_str(), p.c_str());
       else
-        sock = openSocket(s, address.substr(0, pos).c_str(), address.substr(pos + 1).c_str());
+        sock = openSocket(s, h.c_str(), p.c_str());
       if (sock >= 0)
         sockets.push_back(s);
       return (sock >= 0);
@@ -122,6 +166,9 @@ class UDPSplitter {
       size_t max_size,
       int max_wait_s
     ) {
+      if (sockets.size() < 2) {
+        return ERR_CODE_COMMAND_LINE;
+      }
       fd_set s;
       FD_ZERO(&s);
       FD_SET(sockets[0].socket, &s);
@@ -153,7 +200,7 @@ class UDPSplitter {
       for (; it != sockets.end(); it++) {
         struct sockaddr_in *s = (struct sockaddr_in *) it->addr.ai_addr;
         if (s->sin_family == remotePeerAddr->sin_family && 
-          s->sin_addr == remotePeerAddr->sin_addr && 
+          memcmp(&s->sin_addr, &remotePeerAddr->sin_addr, sizeof(struct in_addr)) == 0 && 
           s->sin_port == remotePeerAddr->sin_port
         ) {
           return true;
@@ -166,10 +213,19 @@ class UDPSplitter {
       const char *msg,
       size_t size
     ) {
+      if (logstream  && verbosity > 2) {
+        *logstream << "sendDown" << std::endl;
+      }
       // skip first socket
       std::vector<UDPSocket>::const_iterator it(sockets.begin());
       it++;
       for (; it != sockets.end(); it++) {
+        if (logstream && verbosity > 2) {
+          struct sockaddr_in *s = (struct sockaddr_in *) it->addr.ai_addr;
+          *logstream << "send down " << hexString(msg, size) 
+            << " to " << inet_ntoa(s->sin_addr) << ":" << ntohs(s->sin_port) << std::endl;
+        }
+
         size_t r = sendto(it->socket, msg, size, 0, it->addr.ai_addr, it->addr.ai_addrlen);
         if (r < 0) {
           return r;
@@ -184,7 +240,9 @@ class UDPSplitter {
     ) {
       // skip first socket
       // size_t r = sendto(sockets[0].socket, msg, size, 0, addr.ai_addr, addr.ai_addrlen);
-      std::cerr << "sendUp() not implemented yet " << std::endl;
+      if (logstream && verbosity > 2) {
+        *logstream << "sendUp() not implemented yet " << std::endl;
+      }
       size_t r = -1;
       return r;
     }
@@ -281,7 +339,7 @@ int parseCmd
 	nerrors = arg_parse(argc, argv, argtable);
 
   splitter.daemonize = a_daemonize->count > 0;
-  splitter.verbosity = a_daemonize->count;
+  splitter.verbosity = a_verbosity->count;
 
   if (a_logfilename->count) {
       splitter.logfilename = *a_logfilename->sval;
@@ -295,13 +353,21 @@ int parseCmd
         }
       }
   } else {
+    splitter.logstream = &std::cerr;
     splitter.logfilename = "";
   }
 
   if (!nerrors) {
     for (int i = 0; i < a_address->count; i++) {
-      splitter.addAddress(a_address->sval[i]);
+      if (!splitter.addAddress(a_address->sval[i])) {
+        nerrors++;
+        break;
+      }
+      std::cerr << "{" <<std::endl << splitter.toString() << "}" << std::endl;
     }
+  }
+  if (splitter.sockets.size() < 2) {
+    nerrors++;
   }
 
 	// special case: '--help' takes precedence over error reporting
@@ -310,7 +376,7 @@ int parseCmd
 			arg_print_errors(stderr, a_end, progname.c_str());
 		std::cerr << "Usage: " << progname << std::endl;
 		arg_print_syntax(stderr, argtable, "\n");
-		std::cerr << "Temperature reader" << std::endl;
+		std::cerr << "UDP splitter" << std::endl;
 		arg_print_glossary(stderr, argtable, "  %-25s %s\n");
 		arg_freetable(argtable, sizeof(argtable) / sizeof(argtable[0]));
 		return 1;
@@ -326,30 +392,38 @@ static void run()
 	int c = 0;
   char msg[1024];  // 51, 115, 222
 
+  if (splitter.logstream && splitter.verbosity > 2) {
+    for (std::vector<UDPSocket>::const_iterator it(splitter.sockets.begin()); it != splitter.sockets.end(); it++) {
+      struct sockaddr_in *s = (struct sockaddr_in *) it->addr.ai_addr;
+      *splitter.logstream << "socket: " <<  it->socket << ", address " << inet_ntoa(s->sin_addr) << ":" << ntohs(s->sin_port) << std::endl;
+    }
+  }
+
 	while (!splitter.stopped) {
     struct sockaddr_in remotePeerAddress;
     int r = splitter.receiveMain(&remotePeerAddress, msg, sizeof(msg), 1);
     switch (r)
     {
+    case ERR_CODE_COMMAND_LINE:
+      std::cerr << "Error " << r << ": " << strerror_udpsplitter(r) << std::endl;
+      break;
     case -1:  // timeout
       break;
     case 0:   // ?!!
       break;
     default:
-      if (splitter.verbosity > 2) {
-        std::cerr << (char) c;
-        if (splitter.isPeerAddr(&remotePeerAddress)) {
-          splitter.sendUp(msg, sizeof(msg));
-        } else {
-          splitter.sendDown(msg, sizeof(msg));
-        }
+      if (splitter.logstream) {
+        *splitter.logstream << hexString(msg, r) << std::endl;
+      }
+      if (splitter.isPeerAddr(&remotePeerAddress)) {
+        splitter.sendUp(msg, r);
+      } else {
+        splitter.sendDown(msg, r);
       }
       break;
     }
-    *splitter.logstream << "\t"
-          << std::fixed << std::setprecision(1) << hexString(msg, r) << std::endl;
-    }
   }
+}
 
 
 int main(
@@ -358,7 +432,7 @@ int main(
 ) {
   if (parseCmd(splitter, argc, argv) != 0) {
     exit(ERR_CODE_COMMAND_LINE);  
-  };
+  }
 #ifdef _MSC_VER
 #else  
   setSignalHandler();
