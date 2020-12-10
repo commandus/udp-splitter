@@ -29,6 +29,9 @@ const std::string progname = "udp-splitter";
 #define DEF_CONFIG_FILE_NAME ".udp-splitter"
 #define DEF_TIME_FORMAT      "%F %T"
 
+#define DEF_BUFFER_SIZE     4096
+#define DEF_BUFFER_SIZE_S   "4096"
+
 class UDPSocket {
   public:
     int socket;
@@ -57,6 +60,8 @@ class UDPSocket {
 };
   
 class UDPSplitter {
+  private:
+    std::string buffer;
   public:
     std::vector<UDPSocket> sockets;
     bool stopped;
@@ -71,6 +76,7 @@ class UDPSplitter {
       logfilename(""), logstream(&std::cerr)
     {
       memset(&remotePeerAddress, 0, sizeof(struct sockaddr_in));
+      setBufferSize(DEF_BUFFER_SIZE);
     }
 
     ~UDPSplitter() {
@@ -79,6 +85,10 @@ class UDPSplitter {
           delete logstream;
         logstream = NULL;
       }
+    }
+
+    void setBufferSize(size_t value) {
+      buffer.resize(value);
     }
 
     std::string toString() {
@@ -159,10 +169,8 @@ class UDPSplitter {
       return (sock >= 0);
     }
 
-    int receiveMain(
+    int receive(
       struct sockaddr_in *remotePeerAddr,
-      char *msg,
-      size_t max_size,
       int max_wait_s
     ) {
       if (sockets.size() < 2) {
@@ -182,7 +190,7 @@ class UDPSplitter {
       if (retval > 0) {
           // our socket has data
           socklen_t addrlen = sizeof(struct sockaddr_in); 
-          return recvfrom(sockets[0].socket, msg, max_size, 0, (struct sockaddr *) remotePeerAddr, &addrlen);
+          return recvfrom(sockets[0].socket, (void *) buffer.c_str(), buffer.size(), 0, (struct sockaddr *) remotePeerAddr, &addrlen);
       }
 
       // our socket has no data
@@ -209,7 +217,6 @@ class UDPSplitter {
     }
 
     int sendDown(
-      const char *msg,
       size_t size
     ) {
       // skip first socket
@@ -218,11 +225,11 @@ class UDPSplitter {
       for (; it != sockets.end(); it++) {
         if (logstream && verbosity > 2) {
           struct sockaddr_in *s = (struct sockaddr_in *) it->addr.ai_addr;
-          *logstream << hexString(msg, size) 
+          *logstream << hexString(buffer.c_str(), size) 
             << " -> " << inet_ntoa(s->sin_addr) << ":" << ntohs(s->sin_port) << std::endl;
         }
 
-        size_t r = sendto(it->socket, msg, size, 0, it->addr.ai_addr, it->addr.ai_addrlen);
+        size_t r = sendto(it->socket, buffer.c_str(), size, 0, it->addr.ai_addr, it->addr.ai_addrlen);
         if (r < 0) {
           return r;
         }
@@ -231,16 +238,15 @@ class UDPSplitter {
     }
 
     int sendUp(
-      const char *msg,
       size_t size
     ) {
       // skip first socket
       // size_t r = sendto(sockets[0].socket, msg, size, 0, addr.ai_addr, addr.ai_addrlen);
       if (logstream && verbosity > 2) {
-        *logstream << hexString(msg, size) 
+        *logstream << hexString(buffer.c_str(), size) 
             << " <- " << inet_ntoa(remotePeerAddress.sin_addr) << ":" << ntohs(remotePeerAddress.sin_port) << std::endl;
       }
-      size_t r = sendto(sockets[0].socket, msg, size, 0, (struct sockaddr *) &remotePeerAddress, sizeof(remotePeerAddress));
+      size_t r = sendto(sockets[0].socket, buffer.c_str(), size, 0, (struct sockaddr *) &remotePeerAddress, sizeof(remotePeerAddress));
       return r;
     }
 
@@ -319,6 +325,7 @@ int parseCmd
 {
   // device path
   struct arg_str *a_address = arg_strn(NULL, NULL, "<host:port>", 2, 100, "source dest1 [dest2]..");
+  struct arg_int *a_size = arg_int0("s", "size", "<size>", "buffer size. Default " DEF_BUFFER_SIZE_S);
   struct arg_str *a_logfilename = arg_str0("l", "logfile", "<file>", "log file");
   struct arg_lit *a_daemonize = arg_lit0("d", "daemonize", "run daemon");
   struct arg_lit *a_verbosity = arg_litn("v", "verbose", 0, 3, "Set verbosity level");
@@ -326,7 +333,7 @@ int parseCmd
 	struct arg_end *a_end = arg_end(20);
 
 	void* argtable[] = { 
-		a_address, a_logfilename, a_daemonize, a_verbosity, a_help, a_end 
+		a_address, a_size, a_logfilename, a_daemonize, a_verbosity, a_help, a_end 
 	};
 
 	int nerrors;
@@ -342,6 +349,15 @@ int parseCmd
 
   splitter.daemonize = a_daemonize->count > 0;
   splitter.verbosity = a_verbosity->count;
+  if (a_size->count) {
+    int sz = *a_size->ival ;
+    if (sz <= 0) {
+      std::cerr << ERR_INVALID_BUFFER_SIZE  << std::endl;
+      nerrors++;
+    } else {
+      splitter.setBufferSize(sz);
+    }
+  }
 
   if (a_logfilename->count) {
       splitter.logfilename = *a_logfilename->sval;
@@ -391,11 +407,9 @@ static void run()
 {
 	std::stringstream buf;
 	int c = 0;
-  char msg[1024];  // 51, 115, 222
-
 	while (!splitter.stopped) {
     struct sockaddr_in peerAddr;
-    int r = splitter.receiveMain(&peerAddr, msg, sizeof(msg), 1);
+    int r = splitter.receive(&peerAddr, 1);
     switch (r)
     {
     case ERR_CODE_COMMAND_LINE:
@@ -407,10 +421,10 @@ static void run()
       break;
     default:
       if (splitter.isPeerAddr(&peerAddr)) {
-        splitter.sendUp(msg, r);
+        splitter.sendUp(r);
       } else {
         splitter.setLastRemoteAddress(&peerAddr);
-        splitter.sendDown(msg, r);
+        splitter.sendDown(r);
       }
       break;
     }

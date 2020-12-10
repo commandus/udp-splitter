@@ -19,11 +19,11 @@ make
 sudo make install
 ```
 
-cmake:
+cmake (Clang):
 
 ```
 mkdir build
 cd build
-cmake ..
+export CC=/usr/bin/clang;export CXX=/usr/bin/clang++;cmake ..
 make
 ```

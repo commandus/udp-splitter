@@ -12,6 +12,7 @@
 #define ERR_INVALID_PAR_LOG_FILE		"Invalid log file "
 #define ERR_GET_ADDRESS					"get address info error "
 #define ERR_BIND						"bind error "
+#define ERR_INVALID_BUFFER_SIZE			"Invalid buffer size "
 
 #define MSG_INTERRUPTED 				"Interrupted "
 #define MSG_PG_CONNECTED        		"Connected"
