@@ -5,13 +5,6 @@ AM_CXXFLAGS=-std=c++11 -O0
 commoncppflags = -Ithird_party
 
 #
-#	Exclude generated sources from distribution
-#
-nodist_human_detector_SOURCES = $(GEN)
-BUILT_SOURCES = $(GEN)
-CLEANFILES = $(GEN)
-
-#
 # Binaries
 #
 bin_PROGRAMS = udp-splitter
